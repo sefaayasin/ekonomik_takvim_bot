@@ -7,55 +7,66 @@ on:
     - cron: "*/5 * * * *"    # 5 dakikada bir uyarı kontrolü
   workflow_dispatch:
     inputs:
-      mode:
-        description: "summary | alerts"
-        required: true
-        default: "summary"
       force:
         description: "Sessiz saatleri yok say (true/false)"
         required: true
         default: "false"
+        type: choice
+        options: ["false","true"]
 
 jobs:
-  daily_summary:
+  # --- Zamanlanmış işler ---
+  daily_summary_scheduled:
     if: github.event_name == 'schedule' && github.event.schedule == '0 6 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
       - env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python send_calendar_bot.py summary
 
-  half_hour_alerts:
+  half_hour_alerts_scheduled:
     if: github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
       - env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python send_calendar_bot.py alerts
 
-  manual_run:
+  # --- Manuel tetikleme: İKİSİ BİRDEN çalışsın ---
+  manual_summary:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
       - env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_RUN: ${{ github.event.inputs.force }}
-        run: python send_calendar_bot.py "${{ github.event.inputs.mode }}"
+        run: python send_calendar_bot.py summary
+
+  manual_alerts:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_RUN: ${{ github.event.inputs.force }}
+        run: python send_calendar_bot.py alerts
