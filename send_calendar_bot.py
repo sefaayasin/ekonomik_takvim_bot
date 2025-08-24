@@ -1,5 +1,5 @@
 # requirements: cloudscraper, lxml, pandas, tzdata, requests
-import os, re, sys, json, requests, pandas as pd, datetime as dt
+import os, re, sys, requests, pandas as pd, datetime as dt
 from zoneinfo import ZoneInfo
 from lxml import html
 import cloudscraper
@@ -11,7 +11,7 @@ QUIET_START = 0                     # 00:00
 QUIET_END   = 9                     # 09:00 (09 dahil değil)
 TELEGRAM_API = "https://api.telegram.org"
 
-# Env ile test/force
+# Env ile opsiyonel test/force
 DRY_RUN   = (os.environ.get("DRY_RUN","").lower() in {"1","true","yes"})
 FORCE_RUN = (os.environ.get("FORCE_RUN","").lower() in {"1","true","yes"})
 
@@ -44,6 +44,8 @@ def tg_send(text: str, disable_preview=True, prefix:str=""):
         "text": msg,
         "disable_web_page_preview": disable_preview
     }, timeout=30)
+    # debug istersen aç:
+    # print("TG resp:", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
 
@@ -196,13 +198,12 @@ def run_half_hour_alerts(prefix=""):
         tg_send(build_alert_message(r), prefix=prefix)
 
 # ======== TEST MODLARI ========
-def run_test_summary(dry_run=True):
-    if dry_run: os.environ["DRY_RUN"]="1"
+def run_test_summary():
+    # DRY_RUN zorlaması yok; --dry-run kullanırsan yazdırır, yoksa gerçekten gönderir
     run_daily_summary(prefix="[TEST] ")
 
-def run_test_alert(dry_run=True):
-    if dry_run: os.environ["DRY_RUN"]="1"
-    # mümkünse bugün ilerideki ilk olayı al ve örnek uyarı gönder
+def run_test_alert():
+    # En yakın ileri tarihli bir olayı seçip örnek uyarı gönder
     df = get_today_df(importance=IMPORTANCE)
     now = now_tr()
     cand = df[df["dt_TR"].notna() & (df["dt_TR"] > now)].sort_values("dt_TR").head(1)
@@ -228,8 +229,8 @@ if __name__ == "__main__":
     elif mode == "alerts":
         run_half_hour_alerts()
     elif mode in {"test","test-summary"}:
-        run_test_summary(dry_run=True)
+        run_test_summary()
     elif mode in {"test-alert","test-alerts"}:
-        run_test_alert(dry_run=True)
+        run_test_alert()
     else:
         print("Kullanım: python send_calendar_bot.py [summary|alerts|test-summary|test-alerts] [--dry-run] [--force]")
