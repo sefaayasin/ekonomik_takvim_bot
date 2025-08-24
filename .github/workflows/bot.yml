@@ -3,8 +3,8 @@ name: Economic Calendar Telegram Bot
 on:
   schedule:
     # TR = UTC+3; 09:00 TR -> 06:00 UTC
-    - cron: "0 6 * * *"      # günlük özet (09:00 TR)
-    - cron: "*/5 * * * *"    # 5 dakikada bir -> 30dk önce uyarı kontrolü
+    - cron: "0 6 * * *"      # günlük özet
+    - cron: "*/5 * * * *"    # 5 dakikada bir uyarı kontrolü
   workflow_dispatch:
     inputs:
       mode:
@@ -21,8 +21,8 @@ on:
         default: "false"
 
 jobs:
-  scheduled_summary:
-    if: github.event_name == 'schedule' && contains(fromJson('["0 6 * * *"]'), github.event.schedule)
+  daily_summary:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 6 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +34,8 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python send_calendar_bot.py summary
 
-  scheduled_alerts:
-    if: github.event_name == 'schedule' && contains(fromJson('["*/5 * * * *"]'), github.event.schedule)
+  half_hour_alerts:
+    if: github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
