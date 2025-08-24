@@ -2,13 +2,26 @@ name: Economic Calendar Telegram Bot
 
 on:
   schedule:
-    # TR = UTC+3; 09:00 TR = 06:00 UTC
-    - cron: "0 6 * * *"      # her sabah 06:00 UTC -> günlük özet
-    - cron: "*/5 * * * *"    # her 5 dakikada bir -> 30dk önce uyarı penceresi
-  workflow_dispatch: {}      # manuel tetikleme
+    # TR = UTC+3; 09:00 TR -> 06:00 UTC
+    - cron: "0 6 * * *"      # günlük özet (09:00 TR)
+    - cron: "*/5 * * * *"    # 5 dakikada bir -> 30dk önce uyarı kontrolü
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "summary | alerts | test-summary | test-alerts"
+        required: true
+        default: "test-summary"
+      dry_run:
+        description: "Mesajları gerçekten gönderme (true/false)"
+        required: true
+        default: "true"
+      force:
+        description: "Sessiz saatleri yok say (true/false)"
+        required: true
+        default: "false"
 
 jobs:
-  daily_summary:
+  scheduled_summary:
     if: github.event_name == 'schedule' && contains(fromJson('["0 6 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     steps:
@@ -21,8 +34,8 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python send_calendar_bot.py summary
 
-  half_hour_alerts:
-    if: github.event_name == 'schedule' && contains(fromJson('["*/5 * * * *"]'), github.event.schedule) || github.event_name == 'workflow_dispatch'
+  scheduled_alerts:
+    if: github.event_name == 'schedule' && contains(fromJson('["*/5 * * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +46,18 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python send_calendar_bot.py alerts
+
+  manual_run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN:  ${{ github.event.inputs.dry_run }}
+          FORCE_RUN: ${{ github.event.inputs.force }}
+        run: python send_calendar_bot.py "${{ github.event.inputs.mode }}"
