@@ -11,8 +11,7 @@ QUIET_START = 0                     # 00:00
 QUIET_END   = 9                     # 09:00 (09 dahil değil)
 TELEGRAM_API = "https://api.telegram.org"
 
-# Env ile opsiyonel test/force
-DRY_RUN   = (os.environ.get("DRY_RUN","").lower() in {"1","true","yes"})
+# Sessiz saatleri override etmek istersen (GH Actions Input veya env ile)
 FORCE_RUN = (os.environ.get("FORCE_RUN","").lower() in {"1","true","yes"})
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -29,23 +28,42 @@ def in_quiet_hours(t: dt.datetime) -> bool:
 def fmt_val(x):
     return x if (x and str(x).strip() and str(x).strip() != "\xa0") else "-"
 
+# ------- Ülke -> Bayrak emoji --------
+def flag_for_country(name: str) -> str:
+    n = (name or "").strip().lower()
+    m = {
+        "united states": "🇺🇸", "usa": "🇺🇸", "u.s.": "🇺🇸", "us": "🇺🇸",
+        "euro area": "🇪🇺", "eurozone": "🇪🇺", "european union": "🇪🇺",
+        "united kingdom": "🇬🇧", "uk": "🇬🇧", "britain": "🇬🇧",
+        "germany": "🇩🇪", "france": "🇫🇷", "italy": "🇮🇹", "spain": "🇪🇸",
+        "canada": "🇨🇦", "australia": "🇦🇺", "new zealand": "🇳🇿",
+        "japan": "🇯🇵", "china": "🇨🇳", "switzerland": "🇨🇭",
+        "turkey": "🇹🇷", "türkiye": "🇹🇷",
+        "russia": "🇷🇺", "india": "🇮🇳", "brazil": "🇧🇷", "mexico": "🇲🇽",
+        "south africa": "🇿🇦", "norway": "🇳🇴", "sweden": "🇸🇪", "denmark": "🇩🇰",
+        "poland": "🇵🇱", "hungary": "🇭🇺", "czech republic": "🇨🇿",
+        "portugal": "🇵🇹", "ireland": "🇮🇪", "netherlands": "🇳🇱", "belgium": "🇧🇪",
+        "austria": "🇦🇹", "greece": "🇬🇷", "finland": "🇫🇮", "iceland": "🇮🇸",
+        "south korea": "🇰🇷", "korea": "🇰🇷", "hong kong": "🇭🇰", "singapore": "🇸🇬",
+        "taiwan": "🇹🇼", "indonesia": "🇮🇩", "malaysia": "🇲🇾", "thailand": "🇹🇭",
+        "philippines": "🇵🇭", "israel": "🇮🇱",
+        "saudi arabia": "🇸🇦", "united arab emirates": "🇦🇪", "uae": "🇦🇪",
+        "argentina": "🇦🇷", "chile": "🇨🇱", "colombia": "🇨🇴", "peru": "🇵🇪",
+        "romania": "🇷🇴", "bulgaria": "🇧🇬", "slovakia": "🇸🇰", "slovenia": "🇸🇮",
+        "croatia": "🇭🇷"
+    }
+    return m.get(n, "")
+
 # =================== TELEGRAM ===================
-def tg_send(text: str, disable_preview=True, prefix:str=""):
-    """DRY_RUN modunda göndermeyip stdout'a basar."""
-    msg = (prefix + text) if prefix else text
-    if DRY_RUN:
-        print("\n--- DRY RUN ---\n" + msg + "\n---------------\n")
-        return {"ok": True, "dry_run": True}
+def tg_send(text: str, disable_preview=True):
     if not (BOT_TOKEN and CHAT_ID):
         raise RuntimeError("TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID yok.")
     url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
     r = requests.post(url, json={
         "chat_id": CHAT_ID,
-        "text": msg,
+        "text": text,
         "disable_web_page_preview": disable_preview
     }, timeout=30)
-    # debug istersen aç:
-    # print("TG resp:", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
 
@@ -155,19 +173,22 @@ def build_summary_message(df: pd.DataFrame) -> str:
         return "\n".join(lines)
     for _, r in df.iterrows():
         star = "★★★" if r["importance"] == 3 else "★★"
-        line = f"{r['time_TR']} — {r['country']} — {r['event']} ({star})"
+        flag = flag_for_country(r["country"])
+        line = f"{r['time_TR']} — {flag} {r['country']} — {r['event']} ({star})"
         if fmt_val(r['forecast']) != "-": line += f" | Bekl: {r['forecast']}"
         if fmt_val(r['previous']) != "-": line += f" | Önceki: {r['previous']}"
         lines.append(line)
-    return "\n".join(lines)
+        lines.append("")  # ← her olaydan sonra bir boş satır
+    return "\n".join(lines).rstrip()
 
 def build_alert_message(r) -> str:
     t = r['dt_TR'].strftime('%H:%M') if pd.notna(r['dt_TR']) else r['time_TR']
     star = "★★★" if r["importance"] == 3 else "★★"
+    flag = flag_for_country(r["country"])
     msg = [
         "⏰ Yaklaşan Etkinlik (30 dk sonra)",
         f"Saat: {t} (TR)",
-        f"Ülke: {r['country']}",
+        f"Ülke: {flag} {r['country']}",
         f"Olay: {r['event']}  {star}",
     ]
     if fmt_val(r['forecast']) != "-": msg.append(f"Beklenti: {r['forecast']}")
@@ -175,15 +196,15 @@ def build_alert_message(r) -> str:
     return "\n".join(msg)
 
 # =================== ÇALIŞTIRMA MODLARI ===================
-def run_daily_summary(prefix=""):
+def run_daily_summary():
     now = now_tr()
     if in_quiet_hours(now) and not FORCE_RUN:
         print("Sessiz saat: özet gönderilmedi.")
         return
     df = get_today_df(importance=IMPORTANCE)
-    tg_send(build_summary_message(df), prefix=prefix)
+    tg_send(build_summary_message(df))
 
-def run_half_hour_alerts(prefix=""):
+def run_half_hour_alerts():
     now = now_tr()
     if in_quiet_hours(now) and not FORCE_RUN:
         print("Sessiz saat: uyarılar kapalı.")
@@ -195,31 +216,13 @@ def run_half_hour_alerts(prefix=""):
     win_end   = win_start + dt.timedelta(minutes=5)  # GH Actions 5 dk'da bir
     upcoming = df[df["dt_TR"].notna() & (df["dt_TR"] >= win_start) & (df["dt_TR"] < win_end)].copy()
     for _, r in upcoming.iterrows():
-        tg_send(build_alert_message(r), prefix=prefix)
+        tg_send(build_alert_message(r))
 
-# ======== TEST MODLARI ========
-def run_test_summary():
-    # DRY_RUN zorlaması yok; --dry-run kullanırsan yazdırır, yoksa gerçekten gönderir
-    run_daily_summary(prefix="[TEST] ")
-
-def run_test_alert():
-    # En yakın ileri tarihli bir olayı seçip örnek uyarı gönder
-    df = get_today_df(importance=IMPORTANCE)
-    now = now_tr()
-    cand = df[df["dt_TR"].notna() & (df["dt_TR"] > now)].sort_values("dt_TR").head(1)
-    if cand.empty:
-        tg_send("[TEST] Uyarı: bugün ileri tarihli bir olay bulunamadı (sadece test).")
-        return
-    r = cand.iloc[0]
-    tg_send(build_alert_message(r), prefix="[TEST] ")
-
-# basit argüman ayrıştırma
 def parse_args(argv):
     mode = (argv[1] if len(argv) > 1 else "summary").lower()
     flags = set(a.lower() for a in argv[2:])
-    global DRY_RUN, FORCE_RUN
-    if "--dry-run" in flags: DRY_RUN = True
-    if "--force" in flags:   FORCE_RUN = True
+    global FORCE_RUN
+    if "--force" in flags: FORCE_RUN = True
     return mode
 
 if __name__ == "__main__":
@@ -228,9 +231,5 @@ if __name__ == "__main__":
         run_daily_summary()
     elif mode == "alerts":
         run_half_hour_alerts()
-    elif mode in {"test","test-summary"}:
-        run_test_summary()
-    elif mode in {"test-alert","test-alerts"}:
-        run_test_alert()
     else:
-        print("Kullanım: python send_calendar_bot.py [summary|alerts|test-summary|test-alerts] [--dry-run] [--force]")
+        print("Kullanım: python send_calendar_bot.py [summary|alerts] [--force]")
