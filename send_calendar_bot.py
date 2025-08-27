@@ -95,6 +95,8 @@ def parse_rows_from_html(fragment: str):
             time_txt = td_value(tr, "./td[contains(@class,'js-time')]")
             country  = (tr.xpath("./td[contains(@class,'flagCur')]/*/@title") or [""])[0].strip()
             event    = tr.xpath("normalize-space(./td[contains(@class,' event')])")
+            # fazla boşlukları tek boşluğa indir
+            event = re.sub(r"\s+", " ", event).strip()
 
             imp_key  = (tr.xpath("./td[contains(@class,'sentiment')]/@data-img_key") or [""])[0]
             m = re.search(r"bull(\d+)", imp_key or ""); importance = int(m.group(1)) if m else 0
@@ -156,12 +158,17 @@ def fetch_day_fragments(day: dt.date, *, importance=(2,3), countries=None, max_p
     return frags
 
 def get_today_df(importance=(2,3), countries=None):
-    today = now_tr().date()
-    frags = fetch_day_fragments(today, importance=importance, countries=countries, max_pages=60)
+    today_date = now_tr().date()
+    frags = fetch_day_fragments(today_date, importance=importance, countries=countries, max_pages=60)
     rows  = parse_rows_from_html("".join(frags))
     df = pd.DataFrame(rows)
     if not df.empty and "row_id" in df.columns:
         df = df.drop_duplicates("row_id")
+
+    # yalnız bugünün kayıtlarını bırak
+    if not df.empty and "date_TR" in df.columns:
+        df = df[df["date_TR"] == today_date.isoformat()]
+
     return df.sort_values(["date_TR","time_TR","country"], na_position="last").reset_index(drop=True)
 
 # =================== MESAJLAR ===================
@@ -178,7 +185,7 @@ def build_summary_message(df: pd.DataFrame) -> str:
         if fmt_val(r['forecast']) != "-": line += f" | Bekl: {r['forecast']}"
         if fmt_val(r['previous']) != "-": line += f" | Önceki: {r['previous']}"
         lines.append(line)
-        lines.append("")  # ← her olaydan sonra bir boş satır
+        lines.append("")  # her olaydan sonra boş satır
     return "\n".join(lines).rstrip()
 
 def build_alert_message(r) -> str:
@@ -212,10 +219,17 @@ def run_half_hour_alerts():
     df = get_today_df(importance=IMPORTANCE)
     if df.empty or "dt_TR" not in df.columns:
         return
-    win_start = now + dt.timedelta(minutes=30)
-    win_end   = win_start + dt.timedelta(minutes=5)  # GH Actions 5 dk'da bir
-    upcoming = df[df["dt_TR"].notna() & (df["dt_TR"] >= win_start) & (df["dt_TR"] < win_end)].copy()
-    for _, r in upcoming.iterrows():
+
+    # --- Geniş pencere: 25–35 dk ---
+    upcoming = []
+    for _, r in df.iterrows():
+        if pd.isna(r.get("dt_TR")):
+            continue
+        mins = (r["dt_TR"] - now).total_seconds() / 60.0
+        if 25 <= mins < 35:
+            upcoming.append(r)
+
+    for r in upcoming:
         tg_send(build_alert_message(r))
 
 def parse_args(argv):
