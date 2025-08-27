@@ -1,5 +1,6 @@
 # requirements: cloudscraper, lxml, pandas, tzdata, requests
-import os, re, sys, requests, pandas as pd, datetime as dt
+import os, re, sys, time, random
+import requests, pandas as pd, datetime as dt
 from zoneinfo import ZoneInfo
 from lxml import html
 import cloudscraper
@@ -11,7 +12,7 @@ QUIET_START = 0                     # 00:00
 QUIET_END   = 9                     # 09:00 (09 dahil değil)
 TELEGRAM_API = "https://api.telegram.org"
 
-# Sessiz saatleri override etmek istersen (GH Actions Input veya env ile)
+# Sessiz saatleri override etmek için (GH Actions input/env)
 FORCE_RUN = (os.environ.get("FORCE_RUN","").lower() in {"1","true","yes"})
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -95,8 +96,7 @@ def parse_rows_from_html(fragment: str):
             time_txt = td_value(tr, "./td[contains(@class,'js-time')]")
             country  = (tr.xpath("./td[contains(@class,'flagCur')]/*/@title") or [""])[0].strip()
             event    = tr.xpath("normalize-space(./td[contains(@class,' event')])")
-            # fazla boşlukları tek boşluğa indir
-            event = re.sub(r"\s+", " ", event).strip()
+            event = re.sub(r"\s+", " ", event).strip()  # fazla boşlukları temizle
 
             imp_key  = (tr.xpath("./td[contains(@class,'sentiment')]/@data-img_key") or [""])[0]
             m = re.search(r"bull(\d+)", imp_key or ""); importance = int(m.group(1)) if m else 0
@@ -129,37 +129,78 @@ def parse_rows_from_html(fragment: str):
             continue
     return out
 
-def fetch_day_fragments(day: dt.date, *, importance=(2,3), countries=None, max_pages=60):
-    s = cloudscraper.create_scraper(browser={"browser":"chrome","platform":"windows","desktop":True})
+def fetch_day_fragments(day: dt.date, *, importance=(2,3), countries=None,
+                        max_pages=60, max_attempts=5):
+    """
+    Investing servisinden parçaları döndürür.
+    5xx, JSON parse hatası vb. durumlarda scraper'ı yenileyip
+    exponential backoff ile tekrar dener.
+    """
+    def make_scraper():
+        return cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "desktop": True}
+        )
+
+    s = make_scraper()
     url = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
-    headers = {"x-requested-with":"XMLHttpRequest", "referer":"https://www.investing.com/economic-calendar/"}
+    headers = {
+        "x-requested-with": "XMLHttpRequest",
+        "referer": "https://www.investing.com/economic-calendar/",
+        "accept": "application/json, text/javascript, */*; q=0.01",
+    }
     countries = countries or []
 
     frags = []
     dateFrom = day.strftime("%Y-%m-%d")
     dateTo   = (day + dt.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    for offset in range(0, max_pages*50, 50):
-        payload = {
-            "country[]": countries,
-            "importance[]": list(importance),
-            "timeZone": 55,                 # Europe/Istanbul
-            "timeFilter": "timeRemain",
-            "dateFrom": dateFrom,
-            "dateTo": dateTo,
-            "limit_from": offset
-        }
-        r = s.post(url, data=payload, headers=headers, timeout=30)
-        r.raise_for_status()
-        frag = (r.json().get("data") or "").strip()
-        if not frag or "js-event-item" not in frag:
+    for offset in range(0, max_pages * 50, 50):
+        attempt = 0
+        while attempt < max_attempts:
+            try:
+                payload = {
+                    "country[]": countries,
+                    "importance[]": list(importance),
+                    "timeZone": 55,              # Europe/Istanbul
+                    "timeFilter": "timeRemain",
+                    "dateFrom": dateFrom,
+                    "dateTo": dateTo,
+                    "limit_from": offset
+                }
+                r = s.post(url, data=payload, headers=headers, timeout=25)
+                if r.status_code >= 500:
+                    raise requests.HTTPError(f"{r.status_code} {r.reason}", response=r)
+                try:
+                    j = r.json()
+                except Exception as e:
+                    raise RuntimeError(f"Non-JSON response ({len(r.text)} bytes)") from e
+
+                frag = (j.get("data") or "").strip()
+                if not frag or "js-event-item" not in frag:
+                    return frags
+                frags.append(frag)
+                break  # bu sayfa tamamlandı
+
+            except Exception as e:
+                attempt += 1
+                s = make_scraper()
+                sleep_s = min(2 ** attempt, 8) + random.random()  # 1,2,4,8,8 + jitter
+                print(f"[fetch retry] page_offset={offset} attempt={attempt}/{max_attempts} err={e} -> sleep {sleep_s:.1f}s")
+                time.sleep(sleep_s)
+
+        if attempt >= max_attempts:
             break
-        frags.append(frag)
+
     return frags
 
 def get_today_df(importance=(2,3), countries=None):
     today_date = now_tr().date()
-    frags = fetch_day_fragments(today_date, importance=importance, countries=countries, max_pages=60)
+    try:
+        frags = fetch_day_fragments(today_date, importance=importance, countries=countries, max_pages=60)
+    except Exception as e:
+        print("[get_today_df] fetch failed:", e)
+        frags = []
+
     rows  = parse_rows_from_html("".join(frags))
     df = pd.DataFrame(rows)
     if not df.empty and "row_id" in df.columns:
